@@ -4,6 +4,14 @@ from elasticsearch import Elasticsearch
 import pandas as pd
 import io
 import requests
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Get the Gemini API key from the environment variable
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 app = Flask(__name__)
 CORS(app, origins=["http://localhost:5173", "https://rag-client.netlify.app"])
@@ -15,7 +23,6 @@ api_key = "JBfO3eI1S8qDoWsmfjBtkw"  # Replace with your actual API key
 es = Elasticsearch(es_endpoint, api_key=(api_key_id, api_key), verify_certs=True)
 
 # Gemini API Key
-GEMINI_API_KEY = "AIzaSyA1BhHfMa5VvWhzKJ4Cs5Dk-E5C-GvEO3w"  # Replace with your Gemini API Key
 
 def create_index_with_dense_vector():
     """Create Elasticsearch index with TID, PRICE_RETAIL, PRODUCT_NAME, and URL fields."""

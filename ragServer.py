@@ -1,21 +1,12 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import openai
 from elasticsearch import Elasticsearch
 import pandas as pd
 import io
-import os
-from dotenv import load_dotenv
-
-# Load environment variables from the .env file
-load_dotenv()
-
-# Now you can access the API key like this
-openai.api_key = os.getenv('OPENAI_API_KEY')
+import requests
 
 app = Flask(__name__)
 CORS(app, origins=["http://localhost:5173", "https://rag-client.netlify.app"])
-
 
 # Set up Elasticsearch connection
 es_endpoint = "https://6e60d96a268e44dbbf4421f4a60a6701.us-central1.gcp.cloud.es.io:443"
@@ -23,13 +14,11 @@ api_key_id = "SNeqhJIBBIB8vTBV5SHk"  # Replace with your actual API key ID
 api_key = "JBfO3eI1S8qDoWsmfjBtkw"  # Replace with your actual API key
 es = Elasticsearch(es_endpoint, api_key=(api_key_id, api_key), verify_certs=True)
 
-def embed_text(text):
-    """Embed text using OpenAI's Embeddings API."""
-    response = openai.Embedding.create(input=text, model="text-embedding-ada-002")
-    return response['data'][0]['embedding']
+# Gemini API Key
+GEMINI_API_KEY = "AIzaSyA1BhHfMa5VvWhzKJ4Cs5Dk-E5C-GvEO3w"  # Replace with your Gemini API Key
 
 def create_index_with_dense_vector():
-    """Create Elasticsearch index with only Product Name, TID, and Price fields."""
+    """Create Elasticsearch index with TID, PRICE_RETAIL, PRODUCT_NAME, and URL fields."""
     index_name = "product_dataset"
     mapping = {
         "mappings": {
@@ -37,6 +26,7 @@ def create_index_with_dense_vector():
                 "PRODUCT_NAME": {"type": "text"},
                 "TID": {"type": "text"},
                 "PRICE_RETAIL": {"type": "text"},
+                "URL": {"type": "text"},
                 "embedding": {"type": "dense_vector", "dims": 1536}  # Based on embedding model
             }
         }
@@ -47,23 +37,20 @@ def create_index_with_dense_vector():
     es.indices.create(index=index_name, body=mapping)
 
 def index_custom_data(data):
-    """Index custom data with embeddings into Elasticsearch."""
+    """Index custom data into Elasticsearch."""
     for _, row in data.iterrows():
-        # Create a meaningful text representation for embedding
-        text = f"Product: {row['PRODUCT_NAME']}, Price: {row['PRICE_RETAIL']}, TID: {row['tid']}"
-        
-        # Create the document with only the required fields
+        # Create the document with necessary fields
         doc = {
             'PRODUCT_NAME': row['PRODUCT_NAME'],
             'TID': row['tid'],
             'PRICE_RETAIL': row['PRICE_RETAIL'],
-            'embedding': embed_text(text)  # Embed the text representation
+            'URL': row['url'] if 'url' in row else ''
         }
         es.index(index="product_dataset", body=doc)
 
 @app.route('/upload_csv', methods=['POST'])
 def upload_csv():
-    """Load CSV data, embed, and index it into Elasticsearch from file upload."""
+    """Load CSV data and index it into Elasticsearch from file upload."""
     if 'file' not in request.files:
         return jsonify({"error": "No file part"}), 400
 
@@ -73,10 +60,10 @@ def upload_csv():
 
     if file and file.filename.endswith('.csv'):
         data = pd.read_csv(io.StringIO(file.stream.read().decode("UTF8")))
-        
+
         create_index_with_dense_vector()  # Create the index with necessary settings
         index_custom_data(data)  # Index the data
-        
+
         return jsonify({"message": "CSV data indexed successfully."}), 201
     else:
         return jsonify({"error": "File type not supported. Please upload a CSV file."}), 400
@@ -92,13 +79,62 @@ def perform_exact_tid_search(tid):
     })
     return search_response['hits']['hits']
 
+def perform_fuzzy_search(query_text):
+    """Perform a fuzzy search on Elasticsearch index."""
+    search_response = es.search(index="product_dataset", body={
+        "query": {
+            "multi_match": {
+                "query": query_text,
+                "fields": ["PRODUCT_NAME", "TID", "PRICE_RETAIL", "URL"],
+                "fuzziness": "AUTO"
+            }
+        }
+    })
+    return search_response['hits']['hits']
+
+def generate_gemini_response(input_text):
+    """Generate response from Gemini API."""
+    prompt = f"Reply in a professional manner: {input_text}"
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
+    headers = {
+        "Content-Type": "application/json"
+    }
+    data = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ]
+    }
+    
+    try:
+        response = requests.post(url, json=data, headers=headers)
+        if response.status_code == 200:
+            result = response.json()
+            candidates = result.get("candidates", [])
+            if candidates:
+                content_parts = candidates[0].get("content", {}).get("parts", [])
+                if content_parts:
+                    gemini_response = content_parts[0].get("text", "").strip()
+                    return gemini_response if gemini_response else "No content returned from the API."
+                return "No content parts in the API response."
+            return "No candidates in the API response."
+        return f"Error calling Gemini API: {response.text}"
+    except Exception as e:
+        return f"Exception occurred: {str(e)}"
+
 @app.route('/ask_query', methods=['POST'])
 def ask_query():
-    """Ask a query and return a human-readable response for matching Product Name, TID, and Price."""
-    user_query = request.json.get("query")
+    """Ask a query and return a tailored response based on the specific question asked."""
+    user_query = request.json.get("query").lower()  # Convert to lowercase for easier matching
     
     # Check if the query is asking for a specific TID
-    if "tid" in user_query.lower():
+    if "tid" in user_query:
         tid_value = ''.join(filter(str.isdigit, user_query))  # Extract numeric TID value
         if tid_value:
             # Perform exact match search based on TID
@@ -109,15 +145,42 @@ def ask_query():
                 product_name = product['PRODUCT_NAME']
                 price = product['PRICE_RETAIL']
                 tid = product['TID']
+                url = product['URL']
                 
-                # Return a human-readable sentence response
-                return jsonify({
-                    "response": f"The price of {product_name} with TID {tid} is ${price}."
-                })
-            return jsonify({"response": f"No product found with TID {tid_value}."})
+                # Tailored response based on the type of question
+                if "price" in user_query:
+                    return jsonify({
+                        "response": f"The price of TID {tid} is ${price}."
+                    })
+                elif "product" in user_query or "name" in user_query:
+                    return jsonify({
+                        "response": f"The product name of TID {tid} is {product_name}."
+                    })
+                elif "url" in user_query:
+                    return jsonify({
+                        "response": f"The URL for the product with TID {tid} is {url}."
+                    })
+                else:
+                    # Default response if no specific type of question is detected
+                    return jsonify({
+                        "response": f"The product {product_name} (TID {tid}) is priced at ${price}. You can find more details here: {url}."
+                    })
     
-    # Fallback to semantic search if no exact match is found for TID
-    return jsonify({"response": "Please provide a valid TID in your query."})
+    # Fallback to fuzzy search or Gemini API for generating a response
+    fuzzy_results = perform_fuzzy_search(user_query)
+    if fuzzy_results:
+        product = fuzzy_results[0]['_source']
+        product_name = product['PRODUCT_NAME']
+        price = product['PRICE_RETAIL']
+        tid = product['TID']
+        url = product['URL']
+        return jsonify({
+            "response": f"The product {product_name} (TID {tid}) is priced at ${price}. More info: {url}."
+        })
+    
+    # If no match is found in Elasticsearch, fallback to Gemini API
+    gemini_response = generate_gemini_response(user_query)
+    return jsonify({"response": gemini_response})
 
 if __name__ == "__main__":
     app.run(debug=True)

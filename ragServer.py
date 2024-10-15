@@ -4,12 +4,14 @@ import openai
 from elasticsearch import Elasticsearch
 import pandas as pd
 import io
+import os
+openai.api_key = os.getenv('OPENAI_API_KEY')
 
 app = Flask(__name__)
 CORS(app, origins=["http://localhost:5173"])
 
 # Set up OpenAI API key
-openai.api_key = 'sk-proj-at87SxqXJuEy0T0ExteiT3BlbkFJ2C9wS9z9wue4eucYSEKb'  # Replace with your OpenAI API key
+# openai.api_key = 'sk-proj-at87SxqXJuEy0T0ExteiT3BlbkFJ2C9wS9z9wue4eucYSEKb'  # Replace with your OpenAI API key
 
 # Set up Elasticsearch connection
 es_endpoint = "https://6e60d96a268e44dbbf4421f4a60a6701.us-central1.gcp.cloud.es.io:443"

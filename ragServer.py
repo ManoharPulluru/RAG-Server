@@ -136,6 +136,7 @@ def generate_gemini_response(input_text):
         return f"Exception occurred: {str(e)}"
 
 @app.route('/ask_query', methods=['POST'])
+@app.route('/ask_query', methods=['POST'])
 def ask_query():
     """Ask a query and return a tailored response based on the specific question asked."""
     user_query = request.json.get("query").lower()  # Convert to lowercase for easier matching
@@ -146,7 +147,7 @@ def ask_query():
         if tid_value:
             # Perform exact match search based on TID
             results = perform_exact_tid_search(tid_value)
-            if results:
+            if results:  # If results are found, process them
                 # Extract the first matching product
                 product = results[0]['_source']
                 product_name = product['PRODUCT_NAME']
@@ -172,10 +173,13 @@ def ask_query():
                     return jsonify({
                         "response": f"The product {product_name} (TID {tid}) is priced at ${price}. You can find more details here: {url}."
                     })
+            else:
+                # If no results found for TID
+                return jsonify({"response": f"No data found for TID {tid_value}."}), 404
     
-    # Fallback to fuzzy search or Gemini API for generating a response
+    # Fallback to fuzzy search if no exact match is found
     fuzzy_results = perform_fuzzy_search(user_query)
-    if fuzzy_results:
+    if fuzzy_results:  # If fuzzy search returns results
         product = fuzzy_results[0]['_source']
         product_name = product['PRODUCT_NAME']
         price = product['PRICE_RETAIL']
@@ -184,6 +188,9 @@ def ask_query():
         return jsonify({
             "response": f"The product {product_name} (TID {tid}) is priced at ${price}. More info: {url}."
         })
+    else:
+        # If fuzzy search also finds no results
+        return jsonify({"response": "No data found for the given query."}), 404
     
     # If no match is found in Elasticsearch, fallback to Gemini API
     gemini_response = generate_gemini_response(user_query)
